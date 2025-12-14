@@ -59,16 +59,62 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, onRe
     if (!reportRef.current) return;
 
     const element = reportRef.current;
+    const originalShadows = element.style.boxShadow;
     
-    // Temporarily remove shadow and border for cleaner PDF
-    element.classList.remove('shadow-xl');
+    // Temporarily remove shadow for cleaner PDF
+    element.style.boxShadow = 'none';
     
+    // --- SMART PAGINATION LOGIC ---
+    // We assume A4 PDF creation (210mm width).
+    // Calculate ratio of HTML pixels to PDF mm to determine page height in pixels.
+    const htmlWidth = element.offsetWidth;
+    const pdfWidthMm = 210;
+    const pdfHeightMm = 297;
+    // How many pixels represent 1mm in the current render
+    const pxPerMm = htmlWidth / pdfWidthMm;
+    // The height of one PDF page in pixels
+    const pdfPageHeightPx = pdfHeightMm * pxPerMm;
+
+    const originalMargins: { el: HTMLElement, margin: string }[] = [];
+    const children = Array.from(element.children) as HTMLElement[];
+    const containerTop = element.getBoundingClientRect().top;
+
+    // Loop through all direct children (sections) to check for page breaks
+    for (const child of children) {
+      const rect = child.getBoundingClientRect();
+      const relativeTop = rect.top - containerTop;
+      const relativeBottom = rect.bottom - containerTop;
+
+      // Check which page index (0-based) the top and bottom fall on
+      const startPage = Math.floor(relativeTop / pdfPageHeightPx);
+      const endPage = Math.floor(relativeBottom / pdfPageHeightPx);
+
+      // If the element starts on one page and ends on another, it crosses a break.
+      // We push it to the start of the next page to avoid splitting.
+      if (startPage !== endPage) {
+        const nextPageStartPx = (startPage + 1) * pdfPageHeightPx;
+        // Calculate space needed to push element to the top of the next page
+        // Add a 20px buffer to ensure it doesn't touch the edge exactly
+        const pushDownAmount = nextPageStartPx - relativeTop + 20;
+
+        // Store original margin to restore later
+        originalMargins.push({ el: child, margin: child.style.marginTop });
+        
+        // Apply new margin
+        const currentMargin = parseFloat(window.getComputedStyle(child).marginTop) || 0;
+        child.style.marginTop = `${currentMargin + pushDownAmount}px`;
+      }
+    }
+    // ------------------------------
+
     try {
       const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
         logging: false,
-        backgroundColor: '#ffffff'
+        backgroundColor: '#ffffff', // Force white background for consistency
+        windowWidth: element.scrollWidth,
+        windowHeight: element.scrollHeight
       });
 
       const imgData = canvas.toDataURL('image/png');
@@ -76,24 +122,33 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, onRe
       
       const imgWidth = 210;
       const pageHeight = 297;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const imgProps = pdf.getImageProperties(imgData);
+      const imgHeightInPdf = (imgProps.height * imgWidth) / imgProps.width;
       
-      let heightLeft = imgHeight;
+      let heightLeft = imgHeightInPdf;
       let position = 0;
 
-      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+      // Add first page
+      pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeightInPdf);
       heightLeft -= pageHeight;
 
-      while (heightLeft >= 0) {
-        position = heightLeft - imgHeight;
+      // Add subsequent pages
+      while (heightLeft > 0) {
+        position -= pageHeight;
         pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
+        pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeightInPdf);
         heightLeft -= pageHeight;
       }
 
       pdf.save('nap-analysis-report.pdf');
     } catch (error) {
       console.error("PDF generation failed", error);
+    } finally {
+      // Restore original styles
+      element.style.boxShadow = originalShadows;
+      originalMargins.forEach(({ el, margin }) => {
+        el.style.marginTop = margin;
+      });
     }
   };
 
@@ -361,31 +416,33 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ result, onRe
 
         {/* Report Footer / Contact Info */}
         <div className="mt-8 pt-8 border-t border-slate-200 text-center">
-            <h3 className="text-sm font-semibold text-slate-500 uppercase mb-2">Expert Consultation</h3>
+            <h3 className="text-sm font-semibold text-slate-500 uppercase mb-4">Expert Consultation</h3>
             
-            <div className="inline-flex flex-col md:flex-row items-center gap-4 bg-white px-6 py-4 rounded-xl shadow-sm border border-slate-200">
-                <div className="flex items-center gap-2">
-                    <div className="bg-indigo-100 p-2 rounded-full">
-                        <Users size={20} className="text-indigo-600" />
+            <div className="inline-flex flex-col md:flex-row items-center justify-center gap-8 md:gap-12">
+                <div className="flex items-center gap-3">
+                    <div className="bg-indigo-100 p-2.5 rounded-full">
+                        <Users size={24} className="text-indigo-600" />
                     </div>
                     <div className="text-left">
                         <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Adnexis CEO</div>
-                        <div className="font-bold text-lg text-slate-900">Fiaz Yasin</div>
+                        <div className="font-bold text-xl text-slate-900">Fiaz Yasin</div>
                     </div>
                 </div>
-                <div className="hidden md:block w-px h-10 bg-slate-200 mx-2"></div>
-                <div className="flex items-center gap-2">
-                    <div className="bg-green-100 p-2 rounded-full">
-                        <Phone size={20} className="text-green-600" />
+                
+                <div className="hidden md:block w-px h-12 bg-slate-300"></div>
+
+                <div className="flex items-center gap-3">
+                    <div className="bg-green-100 p-2.5 rounded-full">
+                        <Phone size={24} className="text-green-600" />
                     </div>
                      <div className="text-left">
                         <div className="text-xs text-slate-500 uppercase font-bold tracking-wider">Contact Us</div>
-                        <div className="font-bold text-lg text-slate-900">0343-0418776</div>
+                        <div className="font-bold text-xl text-slate-900">0343-0418776</div>
                     </div>
                 </div>
             </div>
             
-            <p className="text-slate-400 text-xs mt-6">Generated by NAPalyzer AI • Adnexis Digital Solutions</p>
+            <p className="text-slate-400 text-xs mt-8">Generated by NAPalyzer AI • Adnexis Digital Solutions</p>
         </div>
 
       </div>
